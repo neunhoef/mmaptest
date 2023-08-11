@@ -1,0 +1,14 @@
+We read every 16th block of 4096 bytes from a 10 * 1024*1024*1024 bytes file.
+
+Method        mmaps resident       Buffer cache resident     time
+mmap (1st)    no                   no                        413 ms
+mmap          yes                  no                         10 ms
+mmap (later)  no                   no                      13500 ms
+mmap (later)  yes                  no                         10 ms
+seek/read     -                    no                      13500 ms
+seek/read     -                    yes                       164 ms
+readall       -                    no                       7500 ms
+readall       -                    yes                       220 ms
+io_uring      -                    no                       1308 ms
+io_uring      -                    yes                       230 ms
+
