@@ -12,18 +12,21 @@ fn main() {
     println!("This is mmaptest.");
 
     {
-        let los = time::SystemTime::now();
-        println!("Creating a 10 GB large file...");
-        let mut file = File::create("datei").expect("Cannot create file");
-        let mut data: Vec<u8> = Vec::with_capacity(1024 * 1024);
-        for i in 0..1024 * 1024 {
-            data.push((i % 47) as u8);
+        let testfile = File::open("datei");
+        if let Err(_) = testfile {
+            let los = time::SystemTime::now();
+            println!("Creating a 10 GB large file...");
+            let mut file = File::create("datei").expect("Cannot create file");
+            let mut data: Vec<u8> = Vec::with_capacity(1024 * 1024);
+            for i in 0..1024 * 1024 {
+                data.push((i % 47) as u8);
+            }
+            for _i in 0..1024 * 10 {
+                file.write_all(&data[..]).expect("Could not write block");
+            }
+            file.sync_all().expect("Could not sync");
+            println!("Done writing after {:?}.", los.elapsed());
         }
-        for _i in 0..1024 * 10 {
-            file.write_all(&data[..]).expect("Could not write block");
-        }
-        file.sync_all().expect("Could not sync");
-        println!("Done writing after {:?}.", los.elapsed());
     }
 
     let los = time::SystemTime::now();
@@ -188,7 +191,111 @@ fn main() {
             }
         }
         println!(
-            "Done summation {} via full I/O after {:?}.",
+            "Done summation {} via io_uring after {:?}.",
+            sum,
+            los.elapsed()
+        );
+    }
+
+    println!("Using io_uring better...");
+    loop {
+        let mut buffer = String::with_capacity(100);
+        stdin().read_line(&mut buffer).expect("Cannot read line");
+        println!("Got: {}", buffer);
+        if buffer == "q\n" {
+            break;
+        }
+        let los = time::SystemTime::now();
+        println!("Racing to access some data with io_uring...");
+        let file = File::open("datei").expect("Cannot open file");
+        // Prepare some buffers:
+        let mut bufs: Vec<Vec<u8>> = vec![];
+        bufs.reserve(4096);
+        for _ in 0..4096 {
+            bufs.push(vec![0; 4096]);
+        }
+        let mut sum: u64 = 0;
+
+        let submit_one = |i: &mut usize, j: usize, ring: &mut IoUring, bufs: &mut Vec<Vec<u8>>| {
+            let read_e = opcode::Read::new(
+                types::Fd(file.as_raw_fd()),
+                bufs[j].as_mut_ptr(),
+                bufs[j].len() as _,
+            )
+            .offset((*i) as u64)
+            .build()
+            .user_data(j as u64);
+
+            unsafe {
+                ring.submission()
+                    .push(&read_e)
+                    .expect("submission queue is full");
+            }
+            *i += 16 * 4096;
+        };
+
+        let mut i: usize = 0;
+        let mut inflight: u32 = 0;
+
+        for j in 0..4096 {
+            submit_one(&mut i, j, &mut ring, &mut bufs);
+        }
+        inflight += 4096;
+
+        while inflight > 0 {
+            /*
+            println!(
+                "Beginning of loop, inflight = {}, i={}, target={}",
+                inflight,
+                i,
+                10 * 1024 * 1024 * 1024 as u64
+            );
+            */
+
+            let _ = ring
+                .submit_and_wait(1024)
+                .expect("Could not submit_and_wait");
+
+            // println!("Got {} entries back", c);
+            loop {
+                let cqe = ring.completion().next();
+                if cqe.is_none() {
+                    break;
+                }
+                let cqe = cqe.unwrap();
+
+                let jj = cqe.user_data();
+                if cqe.result() < 0 {
+                    panic!("read error: {}", cqe.result());
+                }
+
+                sum += bufs[jj as usize][0] as u64;
+                if i < 10 * 1024 * 1024 * 1024 {
+                    submit_one(&mut i, jj as usize, &mut ring, &mut bufs);
+                } else {
+                    inflight -= 1;
+                }
+                /*
+                let k = j % 16;
+                let millpos = k * 16 * 4096;
+                for l in 0..4096 {
+                    if bufs[j][l] != ((millpos + l) % 47) as u8 {
+                        println!(
+                            "Alarm: i = {}, j = {}, k = {}, l = {}, found: {}, expected: {}",
+                            i,
+                            j,
+                            k,
+                            l,
+                            bufs[j][l],
+                            ((millpos + l) % 47) as u8
+                        );
+                    }
+                }
+                */
+            }
+        }
+        println!(
+            "Done summation {} via io_uring better after {:?}.",
             sum,
             los.elapsed()
         );
