@@ -253,7 +253,7 @@ fn main() {
             */
 
             let _ = ring
-                .submit_and_wait(1024)
+                .submit_and_wait(std::cmp::min(inflight as usize, 1024 as usize))
                 .expect("Could not submit_and_wait");
 
             // println!("Got {} entries back", c);
