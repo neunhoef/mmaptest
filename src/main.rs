@@ -9,6 +9,12 @@ use std::os::unix::io::AsRawFd;
 use std::time;
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let nr_threads = if args.len() >= 2 {
+        args[1].parse::<u64>().expect("Cannot parse number")
+    } else {
+        8 as u64
+    };
     println!("This is mmaptest.");
 
     {
@@ -304,7 +310,7 @@ fn main() {
     const PAGE_SIZE: u64 = 4096;
     const DATA_SIZE: u64 = 10 * 1024 * 1024 * 1024;
     const BLOCK_SIZE: u64 = 4096 * 16;
-    const SHARDS: u64 = 8; // needs to be a power of 2
+    let shards: u64 = nr_threads; // needs to be a power of 2
 
     println!("Using io_uring better and multithreaded...");
     loop {
@@ -318,9 +324,9 @@ fn main() {
         let los = time::SystemTime::now();
 
         let mut j: Vec<std::thread::JoinHandle<u64>> = vec![];
-        for s in 0..SHARDS {
+        for s in 0..shards {
             let nr_blocks = DATA_SIZE / BLOCK_SIZE;
-            let blocks_per_shard = nr_blocks / SHARDS;
+            let blocks_per_shard = nr_blocks / shards;
             let start = blocks_per_shard * s;
             j.push(std::thread::spawn(move || -> u64 {
                 let mut ring = IoUring::new(4096).expect("Cannot create ring");
