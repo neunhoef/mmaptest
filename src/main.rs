@@ -300,4 +300,104 @@ fn main() {
             los.elapsed()
         );
     }
+
+    const PAGE_SIZE: u64 = 4096;
+    const DATA_SIZE: u64 = 10 * 1024 * 1024 * 1024;
+    const BLOCK_SIZE: u64 = 4096 * 16;
+    const SHARDS: u64 = 8; // needs to be a power of 2
+
+    println!("Using io_uring better and multithreaded...");
+    loop {
+        let mut buffer = String::with_capacity(100);
+        stdin().read_line(&mut buffer).expect("Cannot read line");
+        println!("Got: {}", buffer);
+        if buffer == "q\n" {
+            break;
+        }
+        println!("Racing to access some data with io_uring in threads...");
+        let los = time::SystemTime::now();
+
+        let mut j: Vec<std::thread::JoinHandle<u64>> = vec![];
+        for s in 0..SHARDS {
+            let nr_blocks = DATA_SIZE / BLOCK_SIZE;
+            let blocks_per_shard = nr_blocks / SHARDS;
+            let start = blocks_per_shard * s;
+            j.push(std::thread::spawn(move || -> u64 {
+                let mut ring = IoUring::new(4096).expect("Cannot create ring");
+                let file = File::open("datei").expect("Cannot open file");
+                // Prepare some buffers:
+                let mut bufs: Vec<Vec<u8>> = vec![];
+                bufs.reserve(4096);
+                for _ in 0..4096 {
+                    bufs.push(vec![0; PAGE_SIZE as usize]);
+                }
+                let mut sum: u64 = 0;
+
+                let submit_one =
+                    |i: &mut u64, j: usize, ring: &mut IoUring, bufs: &mut Vec<Vec<u8>>| {
+                        let read_e = opcode::Read::new(
+                            types::Fd(file.as_raw_fd()),
+                            bufs[j].as_mut_ptr(),
+                            bufs[j].len() as _,
+                        )
+                        .offset((*i) * BLOCK_SIZE)
+                        .build()
+                        .user_data(j as u64);
+
+                        unsafe {
+                            ring.submission()
+                                .push(&read_e)
+                                .expect("submission queue is full");
+                        }
+                        *i += 1;
+                    };
+
+                let mut i = start;
+                let mut inflight: u32 = 0;
+
+                for j in 0..4096 {
+                    submit_one(&mut i, j, &mut ring, &mut bufs);
+                }
+                inflight += 4096;
+
+                while inflight > 0 {
+                    let _ = ring
+                        .submit_and_wait(std::cmp::min(inflight as usize, 1024 as usize))
+                        .expect("Could not submit_and_wait");
+
+                    // println!("Got {} entries back", c);
+                    loop {
+                        let cqe = ring.completion().next();
+                        if cqe.is_none() {
+                            break;
+                        }
+                        let cqe = cqe.unwrap();
+
+                        let jj = cqe.user_data();
+                        if cqe.result() < 0 {
+                            panic!("read error: {}", cqe.result());
+                        }
+
+                        sum += bufs[jj as usize][0] as u64;
+                        if i < start + blocks_per_shard {
+                            submit_one(&mut i, jj as usize, &mut ring, &mut bufs);
+                        } else {
+                            inflight -= 1;
+                        }
+                    }
+                }
+                sum
+            }));
+        }
+        let mut sum: u64 = 0;
+        for jj in j {
+            let r = jj.join().expect("Could not join");
+            sum += r;
+        }
+        println!(
+            "Done summation {} via io_uring better after {:?}.",
+            sum,
+            los.elapsed()
+        );
+    }
 }
