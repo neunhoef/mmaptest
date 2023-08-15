@@ -312,7 +312,7 @@ fn main() {
     const BLOCK_SIZE: u64 = 4096 * 16;
     let shards: u64 = nr_threads; // needs to be a power of 2
 
-    println!("Using io_uring better and multithreaded...");
+    println!("Using io_uring better and multithreaded {}...", nr_threads);
     loop {
         let mut buffer = String::with_capacity(100);
         stdin().read_line(&mut buffer).expect("Cannot read line");
