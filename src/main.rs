@@ -68,6 +68,41 @@ fn main() {
         println!("Done summation {} after {:?}.", sum, los.elapsed());
     }
 
+    println!("Trying mmap accesses (multiple threads)...");
+
+    loop {
+        let mut buffer = String::with_capacity(100);
+        stdin().read_line(&mut buffer).expect("Cannot read line");
+        println!("Got: {}", buffer);
+        if buffer == "q\n" {
+            break;
+        }
+        let los = time::SystemTime::now();
+        println!("Racing to access some data...");
+        let mut sum: u64 = 0;
+        let range_per_thread = 1024 * 1024 * 1024 * 10 / nr_threads;
+        std::thread::scope(|s| {
+            let mut v = vec![];
+            for t in 0..nr_threads {
+                let thread_offset = t * range_per_thread;
+                let access = &mmap;
+                v.push(s.spawn(move || -> u64 {
+                    let mut sum: u64 = 0;
+                    for i in 0..range_per_thread / (16 * 4096) {
+                        sum += access[(thread_offset + i * 16 * 4096) as usize] as u64;
+                    }
+                    sum
+                }));
+            }
+            while v.len() > 0 {
+                let t = v.pop().unwrap();
+                sum += t.join().unwrap();
+            }
+        });
+
+        println!("Done summation {} after {:?}.", sum, los.elapsed());
+    }
+
     drop(mmap);
     drop(file);
 
